@@ -378,15 +378,32 @@ class Maho_DataSync_Model_Entity_Shipment extends Maho_DataSync_Model_Entity_Abs
         array $items,
         Mage_Sales_Model_Order $order,
     ): void {
+        // An order can carry the same SKU on more than one line, so track which local
+        // items have already been claimed and never hand one to two shipment items.
+        $claimedItemIds = [];
+
         foreach ($items as $itemData) {
             // Find matching order item
             $orderItem = null;
 
+            // order_item_id is the SOURCE system's id. DataSync creates fresh local
+            // order items with new ids, so this lookup only hits when the source
+            // happens to share our numbering - in practice almost never.
             if (!empty($itemData['order_item_id'])) {
                 $orderItem = $order->getItemById($itemData['order_item_id']);
-            } elseif (!empty($itemData['sku'])) {
+            }
+
+            // SKU is the mapping that actually resolves, so it has to run whenever the
+            // id lookup misses - not only when the id is absent. It used to be the
+            // 'elseif' branch of the lookup above, which meant that for any source
+            // supplying order_item_id (all of them) it never ran: every item fell
+            // through to the 'continue' below and the shipment was written with no
+            // items at all, leaving qty_shipped at 0 on the order.
+            if (!$orderItem && !empty($itemData['sku'])) {
                 foreach ($order->getAllItems() as $item) {
-                    if ($item->getSku() === $itemData['sku']) {
+                    if ($item->getSku() === $itemData['sku']
+                        && !isset($claimedItemIds[$item->getId()])
+                    ) {
                         $orderItem = $item;
                         break;
                     }
@@ -400,6 +417,8 @@ class Maho_DataSync_Model_Entity_Shipment extends Maho_DataSync_Model_Entity_Abs
                 );
                 continue;
             }
+
+            $claimedItemIds[$orderItem->getId()] = true;
 
             /** @var Mage_Sales_Model_Order_Shipment_Item $shipmentItem */
             $shipmentItem = Mage::getModel('sales/order_shipment_item');
