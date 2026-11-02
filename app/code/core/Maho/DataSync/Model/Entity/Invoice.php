@@ -252,6 +252,9 @@ class Maho_DataSync_Model_Entity_Invoice extends Maho_DataSync_Model_Entity_Abst
         // Set external reference for registry
         $data['_external_ref'] = $invoice->getIncrementId();
 
+        // Roll invoice counter forward (see _advanceIncrementCounter docblock).
+        $this->_advanceIncrementCounter('invoice', (int) $order->getStoreId(), (string) $invoice->getIncrementId());
+
         $this->_log("Created invoice #{$invoice->getId()} ({$invoice->getIncrementId()}) for order #{$order->getIncrementId()}");
 
         return (int) $invoice->getId();

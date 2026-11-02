@@ -246,4 +246,47 @@ abstract class Maho_DataSync_Model_Entity_Abstract implements Maho_DataSync_Mode
         // Default: no post-processing needed
         // Subclasses override for entity-specific batch finalization
     }
+
+    /**
+     * Roll the eav_entity_store counter forward past a freshly-imported
+     * increment_id. Without this, importing prod orders that carry their
+     * own increment_id leaves the local counter stale — and the next
+     * locally-placed order / quote.reserveOrderId() collides with an
+     * already-imported one (duplicate increment_id, PayPal DUPLICATE_INVOICE_ID,
+     * etc).
+     *
+     * Conditional UPDATE: only bumps when our imported value is higher than
+     * the current counter, so subsequent imports of older orders are no-ops
+     * and locally-placed orders that have already advanced past the import
+     * stay untouched.
+     */
+    protected function _advanceIncrementCounter(string $entityTypeCode, int $storeId, string $incrementId): void
+    {
+        if ($incrementId === '') {
+            return;
+        }
+        $resource = Mage::getSingleton('core/resource');
+        $write = $resource->getConnection('core_write');
+        $entityType = Mage::getSingleton('eav/config')->getEntityType($entityTypeCode);
+        $entityTypeId = (int) $entityType->getId();
+        if ($entityTypeId === 0) {
+            return;
+        }
+
+        // Strip non-digit prefix (e.g. store prefix '1' or '9') so numeric
+        // comparison works regardless of what eav_entity_store currently has.
+        $numericPart = preg_replace('/\D/', '', $incrementId);
+        if ($numericPart === '' || $numericPart === null) {
+            return;
+        }
+
+        $table = $resource->getTableName('eav/entity_store');
+        $write->query(
+            "UPDATE {$table}
+             SET increment_last_id = ?
+             WHERE entity_type_id = ? AND store_id = ?
+               AND CAST(REGEXP_REPLACE(increment_last_id, '[^0-9]', '') AS UNSIGNED) < CAST(? AS UNSIGNED)",
+            [$incrementId, $entityTypeId, $storeId, $numericPart],
+        );
+    }
 }

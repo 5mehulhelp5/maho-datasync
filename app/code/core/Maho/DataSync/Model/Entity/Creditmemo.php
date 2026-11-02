@@ -272,6 +272,9 @@ class Maho_DataSync_Model_Entity_Creditmemo extends Maho_DataSync_Model_Entity_A
         // Set external reference for registry
         $data['_external_ref'] = $creditmemo->getIncrementId();
 
+        // Roll creditmemo counter forward (see _advanceIncrementCounter docblock).
+        $this->_advanceIncrementCounter('creditmemo', (int) $order->getStoreId(), (string) $creditmemo->getIncrementId());
+
         $this->_log("Created credit memo #{$creditmemo->getId()} ({$creditmemo->getIncrementId()}) for order #{$order->getIncrementId()}");
 
         return (int) $creditmemo->getId();

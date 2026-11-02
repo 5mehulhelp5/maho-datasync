@@ -242,6 +242,9 @@ class Maho_DataSync_Model_Entity_Shipment extends Maho_DataSync_Model_Entity_Abs
         // Set external reference for registry
         $data['_external_ref'] = $shipment->getIncrementId();
 
+        // Roll shipment counter forward (see _advanceIncrementCounter docblock).
+        $this->_advanceIncrementCounter('shipment', (int) $order->getStoreId(), (string) $shipment->getIncrementId());
+
         $this->_log("Created shipment #{$shipment->getId()} ({$shipment->getIncrementId()}) for order #{$order->getIncrementId()}");
 
         return (int) $shipment->getId();
