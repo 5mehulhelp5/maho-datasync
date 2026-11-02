@@ -130,6 +130,13 @@ class DatasyncIncremental extends Command
                 null,
                 InputOption::VALUE_REQUIRED,
                 'Live database password',
+            )
+            ->addOption(
+                'sync-chunk-size',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'Entities synced per durable commit (smaller = more resilient to the cron timeout)',
+                '250',
             );
     }
 
@@ -171,6 +178,7 @@ class DatasyncIncremental extends Command
         $limit = $input->getOption('limit') ? (int) $input->getOption('limit') : null;
         $dryRun = $input->getOption('dry-run');
         $stockMode = $input->getOption('stock') ?? 'include';
+        $syncChunkSize = max(1, (int) ($input->getOption('sync-chunk-size') ?: 250));
 
         // Validate stock mode
         if (!in_array($stockMode, ['include', 'exclude', 'only'])) {
@@ -268,12 +276,27 @@ class DatasyncIncremental extends Command
             // Batch sync: reuse a single adapter+engine per entity type
             $entityIds = array_column($items, 'entity_id');
             $trackerIdMap = [];
+            $itemById = [];
             foreach ($items as $item) {
                 $trackerIdMap[$item['entity_id']] = $item['tracker_id'];
+                $itemById[$item['entity_id']] = $item;
             }
 
+            // Chunked so progress survives a kill MID-phase, not just between phases.
+            //
+            // The previous fix committed once per entity type, which is not enough: the
+            // product phase alone is ~7,000 items and syncEntityBatch() was handed all of
+            // them as one indivisible call. The cron wraps this in `timeout 600`, the phase
+            // never finished inside that window, so it was killed having marked nothing and
+            // the next run re-read an identical backlog. The product/stock backlog therefore
+            // only ever grew - from 2026-07-15 onward it never once committed, while every
+            // entity type ordered BEFORE product drained normally, which is what made it
+            // look like the sync was working.
+            //
+            // Committing per chunk means a killed run still banks whatever completed.
+            foreach (array_chunk($entityIds, $syncChunkSize) as $chunkIds) {
             try {
-                $result = $this->syncEntityBatch($datasyncType, $entityIds, $output);
+                $result = $this->syncEntityBatch($datasyncType, $chunkIds, $output);
 
                 // Map successes back to tracker IDs
                 // Only mark truly successful imports as synced - not validation-skipped records
@@ -305,7 +328,7 @@ class DatasyncIncremental extends Command
                 // Entire batch failed (connection error etc), fall back to one-by-one
                 $output->writeln("  <comment>Batch sync failed, falling back to individual sync: {$e->getMessage()}</comment>");
 
-                foreach ($items as $item) {
+                foreach (array_intersect_key($itemById, array_flip($chunkIds)) as $item) {
                     try {
                         $success = $this->syncEntitySingle($datasyncType, $item, $output);
                         if ($success) {
@@ -321,12 +344,7 @@ class DatasyncIncremental extends Command
                 }
             }
 
-            // Per-entity commit. Cron wraps this command in `timeout 600`; previously
-            // every tracker id was only flushed AFTER the whole ENTITY_ORDER loop, so a
-            // SIGTERM mid-loop discarded all of them and the next run re-read an
-            // identical backlog - a livelock that committed nothing from 2026-07-16 on.
-            // Committing per entity type makes progress durable and lets the backlog
-            // drain across runs.
+            // Commit this chunk before starting the next one - see the note above.
             if ($markSynced) {
                 $newlySynced = array_slice($syncedTrackerIds, $flushedCount);
                 if (!empty($newlySynced) && $this->markAsSynced($newlySynced, $output)) {
@@ -335,6 +353,7 @@ class DatasyncIncremental extends Command
                     $output->writeln('  <info>Marked ' . count($newlySynced) . " {$trackerType} tracker records as synced.</info>");
                 }
             }
+            } // end chunk loop
         }
 
         // Catch-all flush for anything appended outside the per-entity commits.
