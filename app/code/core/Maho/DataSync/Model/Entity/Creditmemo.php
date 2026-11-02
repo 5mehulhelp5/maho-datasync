@@ -205,6 +205,15 @@ class Maho_DataSync_Model_Entity_Creditmemo extends Maho_DataSync_Model_Entity_A
         $creditmemo->setData('datasync_source_increment_id', $data['increment_id'] ?? null);
         $creditmemo->setData('datasync_imported_at', Mage_Core_Model_Locale::nowUtc());
 
+        // NetSuite reference. The order and customer importers both carry this across
+        // (Entity/Order.php $_customFields, Entity/Customer.php custom attributes) but this
+        // one never did, so every credit memo imported arrived with the field blank. The source
+        // row has it: the adapter selects *, the value simply was not copied. Without it a
+        // refund here cannot be reconciled against the credit memo NetSuite already holds.
+        if (!empty($data['netsuite_id'])) {
+            $creditmemo->setData('netsuite_id', $data['netsuite_id']);
+        }
+
         // Save credit memo first to get entity_id
         try {
             // Use resource model directly to avoid observers/events
