@@ -10,7 +10,7 @@
  */
 class Maho_DataSync_Model_Entity_Customer extends Maho_DataSync_Model_Entity_Abstract
 {
-    protected array $_requiredFields = ['email', 'firstname', 'lastname'];
+    protected array $_requiredFields = ['email']; // firstname/lastname filled with fallbacks in import() — single-name / social-login sources (PayPal etc.) carry only one name
     protected array $_foreignKeyFields = []; // Customers have no FK dependencies
     protected ?string $_externalRefField = 'email';
 
@@ -47,9 +47,39 @@ class Maho_DataSync_Model_Entity_Customer extends Maho_DataSync_Model_Entity_Abs
         // Set website for lookup
         $websiteId = $this->_getWebsiteId($data);
         $customer->setWebsiteId($websiteId);
-        $customer->loadByEmail($data['email']);
+        $customer->loadByEmail(trim((string) $data['email']));
 
         return $customer->getId() ? (int) $customer->getId() : null;
+    }
+
+    /**
+     * Fill missing first/last name so single-name sources (social-login / PayPal, which
+     * carry only one name) pass Maho's customer validation without inventing data:
+     * split a two-word firstname on the last space, else use "." for the surname; if the
+     * firstname itself is empty, fall back to the email local-part.
+     */
+    private function _fillMissingNames(array $data): array
+    {
+        $first = trim((string) ($data['firstname'] ?? ''));
+        $last  = trim((string) ($data['lastname'] ?? ''));
+        if ($last === '') {
+            if ($first !== '' && str_contains($first, ' ')) {
+                $pos   = strrpos($first, ' ');
+                $last  = trim(substr($first, $pos + 1));
+                $first = trim(substr($first, 0, $pos));
+            }
+            if ($last === '') {
+                $last = '.';
+            }
+        }
+        if ($first === '') {
+            $email = (string) ($data['email'] ?? '');
+            $at    = strpos($email, '@');
+            $first = ($email !== '' && $at !== false) ? substr($email, 0, $at) : '.';
+        }
+        $data['firstname'] = $first;
+        $data['lastname']  = $last;
+        return $data;
     }
 
     /**
@@ -58,6 +88,8 @@ class Maho_DataSync_Model_Entity_Customer extends Maho_DataSync_Model_Entity_Abs
     #[\Override]
     public function import(array $data, Maho_DataSync_Model_Registry $registry): int
     {
+        $data = $this->_fillMissingNames($data);
+
         // Determine if this is a create, update, or merge
         // The engine sets _existing_id when a duplicate is found and mode is update/merge
         $existingId = $data['_existing_id'] ?? null;
@@ -534,7 +566,7 @@ class Maho_DataSync_Model_Entity_Customer extends Maho_DataSync_Model_Entity_Abs
         $errors = parent::validate($data);
 
         // Validate email format
-        if (isset($data['email']) && !filter_var($data['email'], FILTER_VALIDATE_EMAIL)) {
+        if (isset($data['email']) && !filter_var(trim((string) $data['email']), FILTER_VALIDATE_EMAIL)) {
             $errors[] = "Invalid email format: {$data['email']}";
         }
 
