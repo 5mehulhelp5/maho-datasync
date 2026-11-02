@@ -142,10 +142,39 @@ class Maho_DataSync_Model_Entity_Customer extends Maho_DataSync_Model_Entity_Abs
             $setValue('group_id', (int) $data['group_id'], 'setGroupId');
         }
 
-        // Handle password - only for new customers
-        // Since encryption differs between systems, generate random password
-        // and force password reset on first login
-        if (!$existingId) {
+        // Password.
+        //
+        // Hashes from a Magento/OpenMage-lineage source are portable: this platform's
+        // Mage_Core_Model_Encryption::validateHash() tries every historical hash version
+        // (bcrypt -> SHA512 -> SHA256 -> MD5) before failing, so a hash written by the old
+        // system still authenticates and is upgraded in place on the customer's next login.
+        // Carrying it means migrated customers keep the password they already know instead
+        // of being forced through a reset.
+        //
+        // Sources without a compatible hash (CSV, Shopify, WooCommerce, ...) still fall back
+        // to the random-password-plus-forced-reset behaviour.
+        //
+        // setPasswordHash() stores the value verbatim. setPassword() would hash it a second
+        // time, which silently locks the customer out of their own account.
+        $sourceHash = trim((string) ($data['password_hash'] ?? ''));
+
+        if ($sourceHash !== '' && $this->_isPortablePasswordHash($sourceHash)) {
+            if ($customer->getPasswordHash() !== $sourceHash) {
+                $customer->setPasswordHash($sourceHash);
+
+                // Carried so "sessions issued before the password changed" stays meaningful;
+                // without it a customer whose password changed at source would keep older
+                // sessions alive here.
+                if (!empty($data['password_created_at'])) {
+                    $customer->setPasswordCreatedAt((int) $data['password_created_at']);
+                }
+
+                $this->_log(
+                    "Synced password hash for customer: {$data['email']}",
+                    Maho_DataSync_Helper_Data::LOG_LEVEL_DEBUG,
+                );
+            }
+        } elseif (!$existingId) {
             $randomPassword = $this->_getHelper()->generateRandomPassword(16);
             $customer->setPassword($randomPassword);
             $customer->setData('force_password_reset', 1);
@@ -475,6 +504,25 @@ class Maho_DataSync_Model_Entity_Customer extends Maho_DataSync_Model_Entity_Abs
                 }
             }
         }
+    }
+
+    /**
+     * Whether a source hash is in a shape Mage_Core_Model_Encryption can validate:
+     * bcrypt, "<hex digest>:<salt>", or a bare hex digest.
+     *
+     * Anything else (a bcrypt variant this platform cannot read, a foreign platform's
+     * format, or truncated data) is rejected rather than stored, because an unvalidatable
+     * hash is indistinguishable from a wrong password at the login prompt.
+     */
+    protected function _isPortablePasswordHash(string $hash): bool
+    {
+        if (str_starts_with($hash, '$2y$') || str_starts_with($hash, '$2a$')) {
+            return true;
+        }
+
+        $digest = explode(':', $hash, 2)[0];
+
+        return in_array(strlen($digest), [32, 64, 128], true) && ctype_xdigit($digest);
     }
 
     /**

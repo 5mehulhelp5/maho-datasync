@@ -216,6 +216,11 @@ class DatasyncIncremental extends Command
         // Process in dependency order
         $totalSynced = 0;
         $totalErrors = 0;
+        // How many of $syncedTrackerIds have already been committed to the live
+        // tracker. $syncedTrackerIds is append-only, so a positional cursor is safe
+        // and we keep the full list intact for the in-run de-dup filter below.
+        $flushedCount = 0;
+        $markedTotal = 0;
 
         foreach (self::ENTITY_ORDER as $trackerType) {
             if (!isset($pending[$trackerType])) {
@@ -315,14 +320,35 @@ class DatasyncIncremental extends Command
                     }
                 }
             }
+
+            // Per-entity commit. Cron wraps this command in `timeout 600`; previously
+            // every tracker id was only flushed AFTER the whole ENTITY_ORDER loop, so a
+            // SIGTERM mid-loop discarded all of them and the next run re-read an
+            // identical backlog - a livelock that committed nothing from 2026-07-16 on.
+            // Committing per entity type makes progress durable and lets the backlog
+            // drain across runs.
+            if ($markSynced) {
+                $newlySynced = array_slice($syncedTrackerIds, $flushedCount);
+                if (!empty($newlySynced) && $this->markAsSynced($newlySynced, $output)) {
+                    $markedTotal += count($newlySynced);
+                    $flushedCount = count($syncedTrackerIds);
+                    $output->writeln('  <info>Marked ' . count($newlySynced) . " {$trackerType} tracker records as synced.</info>");
+                }
+            }
         }
 
-        // Mark as synced (batched)
-        if ($markSynced && !empty($syncedTrackerIds)) {
-            if ($this->markAsSynced($syncedTrackerIds, $output)) {
-                $output->writeln('');
-                $output->writeln('<info>Marked ' . count($syncedTrackerIds) . ' tracker records as synced.</info>');
+        // Catch-all flush for anything appended outside the per-entity commits.
+        if ($markSynced) {
+            $newlySynced = array_slice($syncedTrackerIds, $flushedCount);
+            if (!empty($newlySynced) && $this->markAsSynced($newlySynced, $output)) {
+                $markedTotal += count($newlySynced);
+                $flushedCount = count($syncedTrackerIds);
             }
+        }
+
+        if ($markSynced && $markedTotal > 0) {
+            $output->writeln('');
+            $output->writeln('<info>Marked ' . $markedTotal . ' tracker records as synced.</info>');
         }
 
         $output->writeln('');
