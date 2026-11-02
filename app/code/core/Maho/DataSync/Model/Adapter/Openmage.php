@@ -28,6 +28,9 @@ class Maho_DataSync_Model_Adapter_Openmage extends Maho_DataSync_Model_Adapter_A
     /** @var array Cached attribute metadata */
     protected array $_attributeCache = [];
 
+    /** @var array<int,array<string,string>> Cached source option_id => label maps, keyed by attribute_id */
+    protected array $_optionLabelCache = [];
+
     /** @var array Cached entity type IDs */
     protected array $_entityTypeIds = [];
 
@@ -536,7 +539,93 @@ class Maho_DataSync_Model_Adapter_Openmage extends Maho_DataSync_Model_Adapter_A
             }
         }
 
+        // Product select/multiselect values are stored as source option_ids, which are
+        // meaningless on the target (the same label often has a different option_id there).
+        // Export them as their label so the importer resolves label -> target option_id.
+        // Scoped to product: other entities' importers don't resolve labels, so translating
+        // their select values (e.g. customer group/gender) would corrupt them.
+        if ($entityType === 'product') {
+            $row = $this->_translateSelectValuesToLabels($row, $attributes);
+        }
+
         return $row;
+    }
+
+    /**
+     * Replace select/multiselect attribute values in a product row with their option
+     * label(s). A value that is not a known option_id is left untouched (it may already
+     * be a label, or a stray value). Multiselect values stay comma-separated.
+     *
+     * @param array<string,mixed> $row
+     * @param array<int,array<string,mixed>> $attributes  keyed by attribute_id
+     * @return array<string,mixed>
+     */
+    protected function _translateSelectValuesToLabels(array $row, array $attributes): array
+    {
+        foreach ($attributes as $attributeId => $meta) {
+            $frontendInput = $meta['frontend_input'] ?? '';
+            if ($frontendInput !== 'select' && $frontendInput !== 'multiselect') {
+                continue;
+            }
+            $code = $meta['attribute_code'] ?? '';
+            if ($code === '' || !isset($row[$code]) || $row[$code] === '') {
+                continue;
+            }
+
+            $labels = $this->_getSourceOptionLabels((int) $attributeId);
+            if ($labels === []) {
+                continue;
+            }
+
+            if ($frontendInput === 'multiselect') {
+                $out = [];
+                foreach (explode(',', (string) $row[$code]) as $id) {
+                    $id = trim($id);
+                    if ($id === '') {
+                        continue;
+                    }
+                    $out[] = $labels[$id] ?? $id;
+                }
+                $row[$code] = implode(',', $out);
+            } else {
+                $id = (string) $row[$code];
+                if (isset($labels[$id])) {
+                    $row[$code] = $labels[$id];
+                }
+            }
+        }
+
+        return $row;
+    }
+
+    /**
+     * Load the source option_id => default-store label map for an attribute, cached.
+     *
+     * @return array<string,string>
+     */
+    protected function _getSourceOptionLabels(int $attributeId): array
+    {
+        if (!isset($this->_optionLabelCache[$attributeId])) {
+            $optionTable = $this->_tablePrefix . 'eav_attribute_option';
+            $valueTable  = $this->_tablePrefix . 'eav_attribute_option_value';
+            $sql = "SELECT o.option_id, v.value
+                    FROM {$optionTable} o
+                    JOIN {$valueTable} v ON v.option_id = o.option_id AND v.store_id = 0
+                    WHERE o.attribute_id = :attribute_id";
+            $map = [];
+            try {
+                $stmt = $this->_connection->prepare($sql);
+                $stmt->execute(['attribute_id' => $attributeId]);
+                while ($r = $stmt->fetch()) {
+                    $map[(string) $r['option_id']] = (string) $r['value'];
+                }
+            } catch (PDOException $e) {
+                $map = [];
+            }
+            $this->_optionLabelCache[$attributeId] = $map;
+        }
+
+        return $this->_optionLabelCache[$attributeId];
     }
 
     /**
