@@ -289,70 +289,70 @@ class DatasyncIncremental extends Command
             // them as one indivisible call. The cron wraps this in `timeout 600`, the phase
             // never finished inside that window, so it was killed having marked nothing and
             // the next run re-read an identical backlog. The product/stock backlog therefore
-            // only ever grew - from 2026-07-15 onward it never once committed, while every
+            // only ever grew - it never once committed, while every
             // entity type ordered BEFORE product drained normally, which is what made it
             // look like the sync was working.
             //
             // Committing per chunk means a killed run still banks whatever completed.
             foreach (array_chunk($entityIds, $syncChunkSize) as $chunkIds) {
-            try {
-                $result = $this->syncEntityBatch($datasyncType, $chunkIds, $output);
+                try {
+                    $result = $this->syncEntityBatch($datasyncType, $chunkIds, $output);
 
-                // Map successes back to tracker IDs
-                // Only mark truly successful imports as synced - not validation-skipped records
-                // (skipped records should be retried if source data is fixed)
-                foreach ($result->getSuccesses() as $success) {
-                    $sourceId = $success['source_id'];
-                    $action = $success['action'] ?? '';
-                    // Skip validation failures - they should not be marked synced
-                    if ($action === 'skipped') {
-                        $totalSkipped = ($totalSkipped ?? 0) + 1;
-                        continue;
-                    }
-                    if (isset($trackerIdMap[$sourceId])) {
-                        $syncedTrackerIds[] = $trackerIdMap[$sourceId];
-                        $totalSynced++;
-                    }
-                }
-
-                // Count errors
-                $batchErrors = count($result->getErrors());
-                $totalErrors += $batchErrors;
-
-                if ($batchErrors > 0 && $output->isVerbose()) {
-                    foreach ($result->getErrors() as $error) {
-                        $output->writeln("  <error>Failed {$trackerType} #{$error['source_id']}: {$error['message']}</error>");
-                    }
-                }
-            } catch (\Exception $e) {
-                // Entire batch failed (connection error etc), fall back to one-by-one
-                $output->writeln("  <comment>Batch sync failed, falling back to individual sync: {$e->getMessage()}</comment>");
-
-                foreach (array_intersect_key($itemById, array_flip($chunkIds)) as $item) {
-                    try {
-                        $success = $this->syncEntitySingle($datasyncType, $item, $output);
-                        if ($success) {
+                    // Map successes back to tracker IDs
+                    // Only mark truly successful imports as synced - not validation-skipped records
+                    // (skipped records should be retried if source data is fixed)
+                    foreach ($result->getSuccesses() as $success) {
+                        $sourceId = $success['source_id'];
+                        $action = $success['action'] ?? '';
+                        // Skip validation failures - they should not be marked synced
+                        if ($action === 'skipped') {
+                            $totalSkipped = ($totalSkipped ?? 0) + 1;
+                            continue;
+                        }
+                        if (isset($trackerIdMap[$sourceId])) {
+                            $syncedTrackerIds[] = $trackerIdMap[$sourceId];
                             $totalSynced++;
-                            $syncedTrackerIds[] = $item['tracker_id'];
                         }
-                    } catch (\Exception $e2) {
-                        $totalErrors++;
-                        if ($output->isVerbose()) {
-                            $output->writeln("  <error>Failed {$trackerType} #{$item['entity_id']}: {$e2->getMessage()}</error>");
+                    }
+
+                    // Count errors
+                    $batchErrors = count($result->getErrors());
+                    $totalErrors += $batchErrors;
+
+                    if ($batchErrors > 0 && $output->isVerbose()) {
+                        foreach ($result->getErrors() as $error) {
+                            $output->writeln("  <error>Failed {$trackerType} #{$error['source_id']}: {$error['message']}</error>");
+                        }
+                    }
+                } catch (\Exception $e) {
+                    // Entire batch failed (connection error etc), fall back to one-by-one
+                    $output->writeln("  <comment>Batch sync failed, falling back to individual sync: {$e->getMessage()}</comment>");
+
+                    foreach (array_intersect_key($itemById, array_flip($chunkIds)) as $item) {
+                        try {
+                            $success = $this->syncEntitySingle($datasyncType, $item, $output);
+                            if ($success) {
+                                $totalSynced++;
+                                $syncedTrackerIds[] = $item['tracker_id'];
+                            }
+                        } catch (\Exception $e2) {
+                            $totalErrors++;
+                            if ($output->isVerbose()) {
+                                $output->writeln("  <error>Failed {$trackerType} #{$item['entity_id']}: {$e2->getMessage()}</error>");
+                            }
                         }
                     }
                 }
-            }
 
-            // Commit this chunk before starting the next one - see the note above.
-            if ($markSynced) {
-                $newlySynced = array_slice($syncedTrackerIds, $flushedCount);
-                if (!empty($newlySynced) && $this->markAsSynced($newlySynced, $output)) {
-                    $markedTotal += count($newlySynced);
-                    $flushedCount = count($syncedTrackerIds);
-                    $output->writeln('  <info>Marked ' . count($newlySynced) . " {$trackerType} tracker records as synced.</info>");
+                // Commit this chunk before starting the next one - see the note above.
+                if ($markSynced) {
+                    $newlySynced = array_slice($syncedTrackerIds, $flushedCount);
+                    if (!empty($newlySynced) && $this->markAsSynced($newlySynced, $output)) {
+                        $markedTotal += count($newlySynced);
+                        $flushedCount = count($syncedTrackerIds);
+                        $output->writeln('  <info>Marked ' . count($newlySynced) . " {$trackerType} tracker records as synced.</info>");
+                    }
                 }
-            }
             } // end chunk loop
         }
 
