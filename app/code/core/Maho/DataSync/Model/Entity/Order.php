@@ -942,6 +942,22 @@ class Maho_DataSync_Model_Entity_Order extends Maho_DataSync_Model_Entity_Abstra
             $item->setRowTotalInclTax((float) ($itemData['row_total_incl_tax'] ?? ($rowTotal + ($itemData['tax_amount'] ?? 0))));
             $item->setBaseRowTotalInclTax((float) ($itemData['base_row_total_incl_tax'] ?? $item->getRowTotalInclTax()));
 
+            // Invoiced amounts — REQUIRED for credit memos / refunds. The refundable
+            // amount is derived from the item-level *_invoiced totals, not row_total;
+            // without these a credit memo computes $0. Map from source when present
+            // (exact), else prorate the row totals by the invoiced qty ratio (a
+            // fully-invoiced item gets its full row).
+            $qtyInvoiced = (float) ($itemData['qty_invoiced'] ?? 0);
+            $invRatio = $qty > 0 ? $qtyInvoiced / $qty : 0;
+            $item->setRowInvoiced((float) ($itemData['row_invoiced'] ?? round($rowTotal * $invRatio, 4)));
+            $item->setBaseRowInvoiced((float) ($itemData['base_row_invoiced'] ?? round($baseRowTotal * $invRatio, 4)));
+            $item->setTaxInvoiced((float) ($itemData['tax_invoiced'] ?? round((float) ($itemData['tax_amount'] ?? 0) * $invRatio, 4)));
+            $item->setBaseTaxInvoiced((float) ($itemData['base_tax_invoiced'] ?? round((float) ($itemData['base_tax_amount'] ?? $itemData['tax_amount'] ?? 0) * $invRatio, 4)));
+            $item->setDiscountInvoiced((float) ($itemData['discount_invoiced'] ?? round((float) ($itemData['discount_amount'] ?? 0) * $invRatio, 4)));
+            $item->setBaseDiscountInvoiced((float) ($itemData['base_discount_invoiced'] ?? round((float) ($itemData['base_discount_amount'] ?? $itemData['discount_amount'] ?? 0) * $invRatio, 4)));
+            $item->setHiddenTaxInvoiced((float) ($itemData['hidden_tax_invoiced'] ?? round((float) ($itemData['hidden_tax_amount'] ?? 0) * $invRatio, 4)));
+            $item->setBaseHiddenTaxInvoiced((float) ($itemData['base_hidden_tax_invoiced'] ?? round((float) ($itemData['base_hidden_tax_amount'] ?? 0) * $invRatio, 4)));
+
             // Weight
             $item->setWeight((float) ($itemData['weight'] ?? 0));
             $item->setRowWeight((float) ($itemData['row_weight'] ?? ($item->getWeight() * $qty)));
